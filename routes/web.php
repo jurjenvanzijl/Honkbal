@@ -46,6 +46,7 @@ Route::middleware('auth')->prefix('beheer')->name('admin.')->group(function () {
     Route::get('wedstrijden/{game}/opstelling', [GameController::class, 'lineup'])->name('games.lineup');
     Route::put('wedstrijden/{game}/opstelling', [GameController::class, 'updateLineup'])->name('games.lineup.update');
 
+    Route::get('csrf-token', [ScoreController::class, 'token'])->name('csrf');
     Route::get('wedstrijden/{game}/scoren', [ScoreController::class, 'show'])->name('score.show');
     Route::get('wedstrijden/{game}/stand', [ScoreController::class, 'state'])->name('score.state');
     Route::post('wedstrijden/{game}/events', [ScoreController::class, 'store'])->name('score.store');

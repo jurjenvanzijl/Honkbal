@@ -9,7 +9,7 @@ Webapp om honkbalwedstrijden **pitch voor pitch te scoren** en **live te laten v
 - De YouTube-stream staat op dezelfde pagina; het scorebord kan worden vertraagd zodat het niets verklapt.
 - Een transparante overlay (stand, inning, honken, telling, outs) kan als browserbron in OBS of Prism in de stream.
 
-## Functies (versie 0.1)
+## Functies (versie 0.2)
 
 | Onderdeel | Wat het doet |
 |---|---|
@@ -24,6 +24,7 @@ Webapp om honkbalwedstrijden **pitch voor pitch te scoren** en **live te laten v
 | Live-pagina | Scorebord, stand per inning (R/H/E), situatie, verloop, statistieken; ververst elke 4 s |
 | Overlay | `/wedstrijd/{code}/overlay`, transparant, ververst elke 2 s, zonder vertraging |
 | Privacy | Per team instelbaar: openbaar alleen voornaam + rugnummer (standaard) of volledige naam |
+| **Offline scoren** | Doorscoren zonder internet; acties wachten op het toestel en worden automatisch verstuurd |
 
 ## Hoe het werkt
 
@@ -37,15 +38,33 @@ app/Scoring/GameEngine.php        rekenregels honkbal (geen database)
 app/Scoring/GameStateService.php  koppeling database ↔ engine, opslaan, ongedaan maken
 app/Scoring/StatFormatter.php     AVG/OBP/SLG en innings pitched
 app/Http/Controllers/...          beheer, scoren (JSON) en openbare pagina's
-public/js/scorer.js               scoorscherm (geen build-stap nodig)
+public/js/engine.js               dezelfde spelregels in JavaScript (offline rekenen)
+public/js/scorer.js               scoorscherm + offline-wachtrij en synchronisatie
+public/sw.js                      service worker: scoorscherm opent ook offline
 public/js/live.js, overlay.js     live-pagina en overlay (pollen JSON)
 ```
+
+## Offline scoren
+
+Slecht bereik op het veld? Gewoon doorscoren.
+
+- **Eén keer met internet openen.** Open het scoorscherm van de wedstrijd vooraf (bijv. thuis of in de kantine) met internet. Daarna werkt het ook offline, zelfs als je de pagina ververst.
+- **Bovenin staat de status:** groen *Online: alles is opgeslagen*, geel *Offline: 3 acties bewaard op dit toestel*, rood bij een probleem.
+- Acties worden direct op het toestel doorgerekend en bewaard (localStorage) en op de achtergrond één voor één verstuurd zodra er verbinding is. Elke actie heeft een uniek ID, dus niets wordt dubbel opgeslagen.
+- *Ongedaan maken* werkt ook offline.
+- **Status wijzigen** (live/beëindigen) kan alleen met verbinding en als alle acties verstuurd zijn.
+- **Blijf op hetzelfde toestel** tot alles verstuurd is. Uitloggen met openstaande acties geeft een waarschuwing; de acties blijven bewaard.
+- **Twee scorers tegelijk** wordt afgeraden. Gebeurt het toch en passen de acties niet meer, dan toont het scherm een rode melding met *Opnieuw proberen* of *Niet-verstuurde acties weggooien*.
+- Het publiek ziet offline ingevoerde acties pas als ze verstuurd zijn.
+
+Technisch: de spelregels bestaan twee keer, in `app/Scoring/GameEngine.php` (leidend) en `public/js/engine.js`.
+`tests/Unit/EngineParityTest.php` speelt duizenden willekeurige acties in beide af en faalt bij elk verschil (vereist Node.js).
 
 Frontend is bewust zonder build-stap (gewone CSS en JavaScript in `public/`), zodat het op elke PHP-hosting draait.
 
 ## Installatie
 
-Vereist: PHP 8.3+, Composer, SQLite of MySQL/MariaDB.
+Vereist: PHP 8.3+, Composer, SQLite of MySQL/MariaDB. Voor offline scoren moet de site via **https** draaien (service workers werken niet op gewone http, behalve op localhost). Node.js is alleen nodig om de tests te draaien.
 
 ```bash
 git clone https://github.com/jurjenvanzijl/honkbal.git
@@ -101,7 +120,6 @@ GitHub Actions draait de tests bij elke push.
 
 ## Bekende beperkingen / nog niet gebouwd
 
-- **Geen offline-modus**: zonder bereik wordt een actie niet opgeslagen (de scorer krijgt een duidelijke melding).
 - Live-pagina ververst via polling (elke 4 s), nog geen WebSockets.
 - Vereenvoudigingen: geen dropped third strike, geen earned runs/ERA, geen fielding-statistieken per verdediger, RBI-regel vereenvoudigd (geen RBI bij fout of dubbelspel; overschrijfbaar via `rbi` in het event).
 - Geen seizoensstatistieken over meerdere wedstrijden, geen spray chart.
@@ -109,5 +127,5 @@ GitHub Actions draait de tests bij elke push.
 
 ## Ideeën voor volgende versies
 
-Offline scoren met synchronisatie (PWA), seizoensstatistieken, spray chart, WebSockets (Laravel Reverb),
+Seizoensstatistieken, spray chart, WebSockets (Laravel Reverb),
 pushmeldingen, export naar PDF/CSV, meerdere clubs/rollen.

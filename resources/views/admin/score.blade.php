@@ -10,6 +10,8 @@
             ->map(fn ($p) => ['id' => $p->id, 'name' => $p->fullName()])->values();
     }
     $config = [
+        'gameId' => $game->id,
+        'tokenUrl' => route('admin.csrf'),
         'stateUrl' => route('admin.score.state', $game),
         'eventUrl' => route('admin.score.store', $game),
         'undoUrl' => route('admin.score.undo', $game),
@@ -35,6 +37,14 @@
         <p class="st-who"><span class="muted">Slagman</span> <strong data-batter>–</strong></p>
         <p class="st-who"><span class="muted">Werper</span> <strong data-pitcher>–</strong></p>
     </section>
+
+    <div class="sync-bar">
+        <p class="sync" data-sync role="status">Laden…</p>
+        <div class="btn-row" data-sync-actions hidden>
+            <button type="button" class="btn btn-small" data-retry>Opnieuw proberen</button>
+            <button type="button" class="btn btn-small btn-danger" data-discard>Niet-verstuurde acties weggooien</button>
+        </div>
+    </div>
 
     <div class="alert alert-error" role="alert" data-error hidden></div>
     <div class="visually-hidden" aria-live="assertive" data-announce></div>
@@ -174,6 +184,13 @@
 @endsection
 
 @push('scripts')
-    <script src="{{ asset('js/common.js') }}?v=1"></script>
-    <script src="{{ asset('js/scorer.js') }}?v=1"></script>
+    <script src="{{ asset('js/common.js') }}?v=2"></script>
+    <script src="{{ asset('js/engine.js') }}?v=2"></script>
+    <script src="{{ asset('js/scorer.js') }}?v=2"></script>
+    <script>
+        // Service worker: zodat dit scherm ook opent als je offline de pagina ververst.
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register(@json(asset('sw.js'))).catch(() => {});
+        }
+    </script>
 @endpush

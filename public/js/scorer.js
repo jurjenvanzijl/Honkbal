@@ -1,6 +1,14 @@
 /**
- * Scoorscherm: pitch voor pitch invoeren. Alle logica (tellen, outs, innings) zit op de
- * server in de GameEngine; dit script stuurt alleen events en tekent de teruggegeven state.
+ * Scoorscherm: pitch voor pitch invoeren, ook zonder internet.
+ *
+ * Werking:
+ *  - De server stuurt de opstelling ("setup") en alle opgeslagen events.
+ *  - Nieuwe acties gaan eerst in een wachtrij op dit toestel (localStorage) en worden direct
+ *    lokaal doorgerekend met public/js/engine.js (zelfde regels als de server).
+ *  - Op de achtergrond verstuurt het script de wachtrij, één actie tegelijk. Elke actie heeft een
+ *    uniek client_id, dus opnieuw versturen na een verbroken verbinding geeft geen dubbele acties.
+ *  - Ongedaan maken: nog niet verstuurd → uit de wachtrij halen; wel verstuurd → een
+ *    "ongedaan maken"-opdracht in de wachtrij zetten voor dat specifieke event.
  */
 (function () {
     'use strict';
@@ -8,57 +16,272 @@
     if (!root) return;
 
     const H = window.Honkbal;
+    const { GameEngine, InvalidPlay } = window.HonkbalEngine;
     const cfg = JSON.parse(root.dataset.config);
-    const csrf = document.querySelector('meta[name="csrf-token"]').content;
     const $ = (sel) => root.querySelector(sel);
     const $$ = (sel) => Array.from(root.querySelectorAll(sel));
 
-    let state = null;
-    let busy = false;
-    let currentResult = null;
-
+    const STORE_KEY = 'honkbal:game:' + cfg.gameId;
     const BASE_LABEL = { 0: 'Uit', 1: '1e honk', 2: '2e honk', 3: '3e honk', 4: 'Scoort' };
 
+    let csrf = document.querySelector('meta[name="csrf-token"]').content;
+    let store = loadStore();
+    let state = null;
+    let currentResult = null;
+    let syncing = false;
+    let online = navigator.onLine;
+    let problem = null; // {message, kind: 'conflict'|'auth'}
+
     // ------------------------------------------------------------------
-    // Communicatie met de server
+    // Opslag op het toestel
     // ------------------------------------------------------------------
 
-    async function request(method, url, body) {
-        if (busy) return;
-        busy = true;
-        root.classList.add('is-busy');
-        showError('');
+    function loadStore() {
         try {
-            const res = await fetch(url, {
-                method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-CSRF-TOKEN': csrf,
-                },
-                body: body ? JSON.stringify(body) : undefined,
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                if (res.status === 419 || res.status === 401) {
-                    showError('Je sessie is verlopen. Ververs de pagina en log opnieuw in.');
-                } else {
-                    showError(data.message || 'Opslaan is niet gelukt.');
-                }
-                return false;
-            }
-            render(data);
-            return true;
+            const raw = localStorage.getItem(STORE_KEY);
+            if (raw) return JSON.parse(raw);
+        } catch (e) { /* geen opslag beschikbaar */ }
+        return { setup: null, serverEvents: [], meta: null, queue: [] };
+    }
+
+    function saveStore() {
+        try {
+            localStorage.setItem(STORE_KEY, JSON.stringify(store));
         } catch (e) {
-            showError('Geen verbinding: de actie is NIET opgeslagen. Probeer het opnieuw zodra je bereik hebt.');
-            return false;
-        } finally {
-            busy = false;
-            root.classList.remove('is-busy');
+            showError('Kan niet opslaan op dit toestel (privévenster of opslag vol?). Offline scoren werkt dan niet.');
         }
     }
 
-    const sendEvent = (type, payload) => request('POST', cfg.eventUrl, { type, payload });
+    function uuid() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        const b = new Uint8Array(16);
+        (window.crypto || window.msCrypto).getRandomValues(b);
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+        return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    }
+
+    // ------------------------------------------------------------------
+    // Lokaal doorrekenen
+    // ------------------------------------------------------------------
+
+    /** Opgeslagen events + wachtrij = wat de scorer ziet. */
+    function effectiveEvents() {
+        const list = store.serverEvents.slice();
+        for (const op of store.queue) {
+            if (op.op === 'event') list.push({ type: op.type, payload: op.payload, client_id: op.client_id });
+            else list.pop();
+        }
+        return list;
+    }
+
+    function buildEngine() {
+        const engine = new GameEngine(store.setup.lineups, store.setup.pitchers, store.meta.players);
+        let conflict = null;
+        for (const event of effectiveEvents()) {
+            try {
+                engine.apply(event);
+            } catch (e) {
+                if (!(e instanceof InvalidPlay)) throw e;
+                conflict = e.message;
+                break;
+            }
+        }
+        return { engine, conflict };
+    }
+
+    function refresh() {
+        if (!store.setup) return;
+        const { engine, conflict } = buildEngine();
+        if (conflict && !problem) {
+            problem = { kind: 'conflict', message: 'De acties op dit toestel passen niet meer op de opgeslagen wedstrijd: ' + conflict };
+        }
+        render(Object.assign(engine.state(), {
+            game: store.meta.game,
+            players: store.meta.players,
+            player_sides: store.meta.player_sides,
+        }));
+        renderSync();
+    }
+
+    function takeServerState(data) {
+        store.setup = data.setup;
+        store.serverEvents = data.events;
+        store.meta = { game: data.game, players: data.players, player_sides: data.player_sides };
+        saveStore();
+    }
+
+    // ------------------------------------------------------------------
+    // Acties van de scorer
+    // ------------------------------------------------------------------
+
+    function addEvent(type, payload) {
+        if (!store.setup) return false;
+        if (store.meta.game.status === 'final') {
+            showError('De wedstrijd is afgelopen. Zet hem eerst weer live.');
+            return false;
+        }
+        const { engine, conflict } = buildEngine();
+        if (conflict) {
+            showError('Los eerst het synchronisatieprobleem op.');
+            return false;
+        }
+        try {
+            engine.apply({ type, payload });
+        } catch (e) {
+            if (!(e instanceof InvalidPlay)) throw e;
+            showError(e.message);
+            return false;
+        }
+        showError('');
+        store.queue.push({ op: 'event', client_id: uuid(), type, payload });
+        saveStore();
+        refresh();
+        sync();
+        return true;
+    }
+
+    function undo() {
+        const last = store.queue[store.queue.length - 1];
+        if (last && last.op === 'event') {
+            store.queue.pop();
+        } else {
+            const events = effectiveEvents();
+            const target = events[events.length - 1];
+            if (!target) {
+                showError('Er is niets om ongedaan te maken.');
+                return;
+            }
+            store.queue.push({ op: 'undo', event_id: target.id });
+        }
+        showError('');
+        saveStore();
+        refresh();
+        announce('Laatste actie ongedaan gemaakt.');
+        sync();
+    }
+
+    // ------------------------------------------------------------------
+    // Synchroniseren met de server
+    // ------------------------------------------------------------------
+
+    async function http(method, url, body) {
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-TOKEN': csrf },
+            body: body ? JSON.stringify(body) : undefined,
+            credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        return { res, data };
+    }
+
+    async function refreshToken() {
+        const { res, data } = await http('GET', cfg.tokenUrl);
+        if (res.ok && data.token) {
+            csrf = data.token;
+            return true;
+        }
+        return false;
+    }
+
+    function sendOp(op) {
+        if (op.op === 'event') return http('POST', cfg.eventUrl, { type: op.type, payload: op.payload, client_id: op.client_id });
+        return http('DELETE', cfg.undoUrl, { event_id: op.event_id });
+    }
+
+    async function sync() {
+        if (syncing || problem) return;
+        syncing = true;
+        renderSync();
+        try {
+            while (store.queue.length) {
+                const op = store.queue[0];
+                let { res, data } = await sendOp(op);
+                if (res.status === 419 && await refreshToken()) {
+                    ({ res, data } = await sendOp(op));
+                }
+                online = true;
+                if (res.ok) {
+                    store.queue.shift();
+                    takeServerState(data);
+                    continue;
+                }
+                if (res.status === 401 || res.status === 419) {
+                    problem = { kind: 'auth', message: 'Je bent uitgelogd. Je acties staan veilig op dit toestel: log opnieuw in en open dit scherm weer.' };
+                } else {
+                    problem = { kind: 'conflict', message: data.message || 'De server weigerde een actie.' };
+                }
+                break;
+            }
+            if (!store.queue.length) await pull();
+        } catch (e) {
+            online = false; // geen verbinding: later opnieuw
+        } finally {
+            syncing = false;
+            refresh();
+        }
+    }
+
+    /** Haal de actuele stand op (bv. acties van een tweede scorer). Alleen als de wachtrij leeg is. */
+    async function pull() {
+        const { res, data } = await http('GET', cfg.stateUrl);
+        if (res.ok && !store.queue.length) {
+            online = true;
+            takeServerState(data);
+        } else if (res.status === 401) {
+            problem = { kind: 'auth', message: 'Je bent uitgelogd. Log opnieuw in.' };
+        }
+    }
+
+    function discardQueue() {
+        if (!confirm(`${store.queue.length} niet-verstuurde actie(s) weggooien en de stand van de server laden?`)) return;
+        store.queue = [];
+        problem = null;
+        saveStore();
+        sync();
+    }
+
+    function retry() {
+        problem = null;
+        sync();
+    }
+
+    // ------------------------------------------------------------------
+    // Weergave
+    // ------------------------------------------------------------------
+
+    function renderSync() {
+        const el = $('[data-sync]');
+        const n = store.queue.length;
+        const waiting = n === 1 ? '1 actie' : n + ' acties';
+        let text;
+        let cls;
+        if (problem) {
+            text = problem.message;
+            cls = 'sync-problem';
+        } else if (syncing && n) {
+            text = 'Versturen… (' + waiting + ')';
+            cls = 'sync-busy';
+        } else if (!online && n) {
+            text = 'Offline: ' + waiting + ' bewaard op dit toestel. Wordt verstuurd zodra er verbinding is.';
+            cls = 'sync-offline';
+        } else if (!online) {
+            text = 'Offline: je kunt gewoon doorscoren.';
+            cls = 'sync-offline';
+        } else if (n) {
+            text = waiting + ' wachten op versturen.';
+            cls = 'sync-busy';
+        } else {
+            text = 'Online: alles is opgeslagen.';
+            cls = 'sync-ok';
+        }
+        el.textContent = text;
+        el.className = 'sync ' + cls;
+        $('[data-sync-actions]').hidden = !problem;
+        $('[data-discard]').hidden = !problem || !n;
+    }
 
     function showError(message) {
         const el = $('[data-error]');
@@ -69,10 +292,6 @@
     function announce(text) {
         $('[data-announce]').textContent = text;
     }
-
-    // ------------------------------------------------------------------
-    // Weergave
-    // ------------------------------------------------------------------
 
     function render(s) {
         const previousPlays = state ? state.plays.length : null;
@@ -109,12 +328,10 @@
     // ------------------------------------------------------------------
 
     function openPanel(name) {
-        $$('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== name && p.dataset.panel !== 'pitch'; });
-        $('[data-panel="pitch"]').hidden = name !== 'pitch';
-        const panel = $(`[data-panel="${name}"]`);
+        $$('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== name; });
         if (name === 'play') resetPlayPanel();
         if (name === 'runner') renderRunnerMoves();
-        const heading = panel.querySelector('h2');
+        const heading = $(`[data-panel="${name}"] h2`);
         if (heading && name !== 'pitch') {
             heading.tabIndex = -1;
             heading.focus();
@@ -183,20 +400,16 @@
         $('[data-submit-play]').focus();
     }
 
-    async function submitPlay() {
+    function submitPlay() {
         if (!currentResult) return;
         const runners = {};
         $$('[data-moves] select').forEach((sel) => {
             if (sel.dataset.from !== 'B') runners[sel.dataset.from] = Number(sel.value);
         });
-        const payload = {
-            result: currentResult,
-            batter_to: Number($('#mv-b').value),
-            runners,
-        };
+        const payload = { result: currentResult, batter_to: Number($('#mv-b').value), runners };
         const fielders = $('[data-fielders]').value.trim();
         if (fielders) payload.fielders = fielders;
-        if (await sendEvent('play', payload)) closePanels();
+        if (addEvent('play', payload)) closePanels();
     }
 
     // ------------------------------------------------------------------
@@ -210,7 +423,6 @@
             $('[data-runner-moves]').innerHTML = '<p class="muted">Er staan geen lopers op de honken.</p>';
             return;
         }
-        // Voorstel per actie.
         const taken = new Set(occupied);
         const defaults = {};
         occupied.forEach((b) => {
@@ -219,16 +431,13 @@
             if (action === 'SB' && b < 3 && !taken.has(b + 1)) { to = b + 1; taken.delete(b); taken.add(to); }
             defaults[b] = to;
         });
-        if (action === 'CS' || action === 'PK') {
-            const lowest = Math.min(...occupied);
-            defaults[lowest] = 0;
-        }
+        if (action === 'CS' || action === 'PK') defaults[Math.min(...occupied)] = 0;
         $('[data-runner-moves]').innerHTML = occupied
             .map((b) => moveSelect('rm-' + b, `Loper op ${BASE_LABEL[b]}: ${state.bases[b].name}`, b, defaults[b], false))
             .join('');
     }
 
-    async function submitRunner() {
+    function submitRunner() {
         const runners = {};
         $$('[data-runner-moves] select').forEach((sel) => {
             const from = Number(sel.dataset.from);
@@ -239,7 +448,7 @@
             showError('Er verandert niets: kies waar een loper naartoe gaat.');
             return;
         }
-        if (await sendEvent('runner', { action: $('[data-runner-action]').value, runners })) closePanels();
+        if (addEvent('runner', { action: $('[data-runner-action]').value, runners })) closePanels();
     }
 
     // ------------------------------------------------------------------
@@ -267,56 +476,106 @@
     }
 
     // ------------------------------------------------------------------
+    // Wedstrijdstatus (vereist verbinding)
+    // ------------------------------------------------------------------
+
+    async function setStatus(status) {
+        if (store.queue.length) {
+            showError('Wacht tot alle acties verstuurd zijn voordat je de status wijzigt.');
+            return;
+        }
+        const label = status === 'final' ? 'De wedstrijd beëindigen?' : 'De wedstrijd (weer) live zetten?';
+        if (!confirm(label)) return;
+        try {
+            let { res, data } = await http('POST', cfg.statusUrl, { status });
+            if (res.status === 419 && await refreshToken()) ({ res, data } = await http('POST', cfg.statusUrl, { status }));
+            if (!res.ok) {
+                showError(data.message || 'Status wijzigen is niet gelukt.');
+                return;
+            }
+            takeServerState(data);
+            showError('');
+            refresh();
+        } catch (e) {
+            showError('Voor het wijzigen van de status is verbinding nodig.');
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Event listeners
     // ------------------------------------------------------------------
 
-    root.addEventListener('click', async (e) => {
+    root.addEventListener('click', (e) => {
         const btn = e.target.closest('button');
-        if (!btn || busy) return;
+        if (!btn || !state) return;
 
-        if (btn.dataset.pitch) {
-            await sendEvent('pitch', { pitch: btn.dataset.pitch });
-        } else if (btn.dataset.open) {
-            openPanel(btn.dataset.open);
-        } else if (btn.dataset.result) {
-            chooseResult(btn.dataset.result);
-        } else if (btn.hasAttribute('data-submit-play')) {
-            await submitPlay();
-        } else if (btn.hasAttribute('data-submit-runner')) {
-            await submitRunner();
-        } else if (btn.hasAttribute('data-close')) {
-            closePanels();
-        } else if (btn.hasAttribute('data-undo')) {
-            if (await request('DELETE', cfg.undoUrl)) announce('Laatste actie ongedaan gemaakt.');
-        } else if (btn.dataset.setStatus) {
-            const label = btn.dataset.setStatus === 'final' ? 'De wedstrijd beëindigen?' : 'De wedstrijd (weer) live zetten?';
-            if (confirm(label)) await request('POST', cfg.statusUrl, { status: btn.dataset.setStatus });
-        }
+        if (btn.dataset.pitch) addEvent('pitch', { pitch: btn.dataset.pitch });
+        else if (btn.dataset.open) openPanel(btn.dataset.open);
+        else if (btn.dataset.result) chooseResult(btn.dataset.result);
+        else if (btn.hasAttribute('data-submit-play')) submitPlay();
+        else if (btn.hasAttribute('data-submit-runner')) submitRunner();
+        else if (btn.hasAttribute('data-close')) closePanels();
+        else if (btn.hasAttribute('data-undo')) undo();
+        else if (btn.dataset.setStatus) setStatus(btn.dataset.setStatus);
+        else if (btn.hasAttribute('data-retry')) retry();
+        else if (btn.hasAttribute('data-discard')) discardQueue();
     });
 
     $('[data-runner-action]').addEventListener('change', renderRunnerMoves);
     $('[data-sub-side]').addEventListener('change', fillBatterSub);
 
-    $('[data-sub-pitcher]').addEventListener('submit', async (e) => {
+    $('[data-sub-pitcher]').addEventListener('submit', (e) => {
         e.preventDefault();
         const fielding = state.batting_side === 'home' ? 'away' : 'home';
         const player = Number($('[data-pitcher-select]').value);
-        if (player && await sendEvent('pitcher', { side: fielding, player_id: player })) closePanels();
+        if (player && addEvent('pitcher', { side: fielding, player_id: player })) closePanels();
     });
 
-    $('[data-sub-batter]').addEventListener('submit', async (e) => {
+    $('[data-sub-batter]').addEventListener('submit', (e) => {
         e.preventDefault();
         const payload = {
             side: $('[data-sub-side]').value,
             slot: Number($('[data-sub-slot]').value),
             player_id: Number($('[data-sub-player]').value),
         };
-        if (payload.player_id && await sendEvent('sub', payload)) closePanels();
+        if (payload.player_id && addEvent('sub', payload)) closePanels();
     });
 
-    // Eerste keer laden.
-    fetch(cfg.stateUrl, { headers: { Accept: 'application/json' } })
-        .then((r) => r.json())
-        .then(render)
-        .catch(() => showError('Kon de wedstrijd niet laden. Ververs de pagina.'));
+    window.addEventListener('online', () => { online = true; sync(); });
+    window.addEventListener('offline', () => { online = false; renderSync(); });
+    // Regelmatig: wachtrij versturen of de stand verversen (tweede scorer).
+    setInterval(() => { if (!document.hidden) sync(); }, 10000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+
+    // ------------------------------------------------------------------
+    // Opstarten
+    // ------------------------------------------------------------------
+
+    (async function start() {
+        if (store.setup) refresh(); // direct de lokale stand tonen
+        try {
+            const { res, data } = await http('GET', cfg.stateUrl);
+            if (res.ok) {
+                online = true;
+                if (!store.queue.length) takeServerState(data);
+                else {
+                    // Wachtrij aanwezig: alleen setup en namen bijwerken, events volgen na het versturen.
+                    store.setup = data.setup;
+                    store.meta = { game: data.game, players: data.players, player_sides: data.player_sides };
+                    if (!store.serverEvents.length) store.serverEvents = data.events;
+                    saveStore();
+                }
+            } else if (res.status === 401) {
+                problem = { kind: 'auth', message: 'Je bent uitgelogd. Log opnieuw in.' };
+            }
+        } catch (e) {
+            online = false;
+        }
+        if (!store.setup) {
+            showError('Geen verbinding en deze wedstrijd is nog niet eerder op dit toestel geopend. Open het scoorscherm één keer met internet.');
+            return;
+        }
+        refresh();
+        sync();
+    })();
 })();

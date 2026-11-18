@@ -7,6 +7,7 @@ use App\Models\Game;
 use App\Scoring\GameEngine;
 use App\Scoring\GameStateService;
 use App\Scoring\InvalidPlayException;
+use App\Scoring\SyncConflictException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -28,7 +29,13 @@ class ScoreController extends Controller
 
     public function state(Game $game): JsonResponse
     {
-        return response()->json($this->service->state($game));
+        return response()->json($this->service->scorerState($game));
+    }
+
+    /** Vers CSRF-token, voor als het scoorscherm lang offline open heeft gestaan. */
+    public function token(Request $request): JsonResponse
+    {
+        return response()->json(['token' => $request->session()->token()]);
     }
 
     public function store(Request $request, Game $game): JsonResponse
@@ -39,6 +46,7 @@ class ScoreController extends Controller
 
         $data = $request->validate([
             'type' => ['required', Rule::in(['pitch', 'play', 'runner', 'pitcher', 'sub'])],
+            'client_id' => ['nullable', 'string', 'regex:/^[0-9a-f-]{8,36}$/i'],
             'payload' => ['required', 'array'],
             'payload.pitch' => ['sometimes', Rule::in(GameEngine::PITCHES)],
             'payload.result' => ['sometimes', Rule::in(GameEngine::PLAY_RESULTS)],
@@ -59,24 +67,31 @@ class ScoreController extends Controller
         ]));
 
         try {
-            $this->service->record($game, $data['type'], $payload, $request->user()->id);
+            $this->service->record($game, $data['type'], $payload, $request->user()->id, $data['client_id'] ?? null);
         } catch (InvalidPlayException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        return response()->json($this->service->state($game->refresh()));
+        return response()->json($this->service->scorerState($game->refresh()));
     }
 
-    public function undo(Game $game): JsonResponse
+    public function undo(Request $request, Game $game): JsonResponse
     {
         if ($game->status === 'final') {
             return response()->json(['message' => 'De wedstrijd is afgelopen. Heropen hem eerst.'], 422);
         }
-        if (! $this->service->undo($game)) {
+        $data = $request->validate(['event_id' => ['nullable', 'integer']]);
+
+        try {
+            $done = $this->service->undo($game, isset($data['event_id']) ? (int) $data['event_id'] : null);
+        } catch (SyncConflictException $e) {
+            return response()->json(['message' => $e->getMessage()], 409);
+        }
+        if (! $done) {
             return response()->json(['message' => 'Er is niets om ongedaan te maken.'], 422);
         }
 
-        return response()->json($this->service->state($game->refresh()));
+        return response()->json($this->service->scorerState($game->refresh()));
     }
 
     public function status(Request $request, Game $game): RedirectResponse|JsonResponse
@@ -85,7 +100,7 @@ class ScoreController extends Controller
         $game->forceFill(['status' => $data['status']])->save();
 
         if ($request->expectsJson()) {
-            return response()->json($this->service->state($game));
+            return response()->json($this->service->scorerState($game));
         }
 
         return back()->with('status', 'Status bijgewerkt: '.$game->statusLabel().'.');

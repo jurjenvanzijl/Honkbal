@@ -272,3 +272,17 @@ legend { font-weight: 700; padding: 0 .25rem; }
     .stats th, .stats td, .linescore th, .linescore td { padding: .35rem .25rem; font-size: .875rem; }
     .card { padding: .85rem; }
 }
+
+/* Synchronisatiestatus scoorscherm -------------------------------- */
+.sync-bar { margin: .75rem 0; }
+.sync { margin: 0; padding: .5rem .75rem; border-radius: 8px; font-weight: 600; border: 1px solid transparent; }
+.sync::before { content: ""; display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .5rem; background: currentColor; vertical-align: middle; }
+.sync-ok { background: var(--success-bg); border-color: var(--green); }
+.sync-ok::before { background: var(--green); }
+.sync-busy { background: var(--info-bg); border-color: var(--navy-2); }
+.sync-offline { background: #fff4d6; border-color: #b07800; color: #4a3300; }
+.sync-offline::before { background: #b07800; }
+.sync-problem { background: var(--error-bg); border-color: var(--red); }
+.sync-problem::before { background: var(--red); }
+@media (prefers-color-scheme: dark) { .sync-offline { background: #3a2c08; color: #ffe2a0; } }
+.sync-bar .btn-row { margin-top: .5rem; }

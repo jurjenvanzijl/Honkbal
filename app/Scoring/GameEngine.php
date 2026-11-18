@@ -395,6 +395,8 @@ class GameEngine
     private function normaliseMoves(array $runners): array
     {
         $moves = [];
+        // Altijd van 1e naar 3e honk controleren (zelfde volgorde als public/js/engine.js).
+        ksort($runners);
         foreach ($runners as $from => $to) {
             $from = (int) $from;
             $to = (int) $to;

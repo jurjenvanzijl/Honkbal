@@ -55,15 +55,39 @@ class GameStateService
     }
 
     /**
+     * State voor het scoorscherm: inclusief de ruwe events en de opstelling, zodat de browser
+     * de wedstrijd ook offline kan doorrekenen (public/js/engine.js).
+     */
+    public function scorerState(Game $game): array
+    {
+        $state = $this->state($game);
+        $state['setup'] = $this->setup($game);
+        $state['events'] = $game->events()->get(['id', 'type', 'payload', 'client_id'])
+            ->map(fn (GameEvent $e) => [
+                'id' => $e->id,
+                'type' => $e->type,
+                'payload' => $e->payload,
+                'client_id' => $e->client_id,
+            ])->all();
+
+        return $state;
+    }
+
+    /**
      * Voegt een event toe nadat de engine het heeft gevalideerd.
+     * Met een client_id is dit idempotent: een tweede keer versturen doet niets.
      *
      * @throws InvalidPlayException
      */
-    public function record(Game $game, string $type, array $payload, ?int $userId = null): GameEvent
+    public function record(Game $game, string $type, array $payload, ?int $userId = null, ?string $clientId = null): GameEvent
     {
-        return DB::transaction(function () use ($game, $type, $payload, $userId) {
+        return DB::transaction(function () use ($game, $type, $payload, $userId, $clientId) {
             // Blokkeer de wedstrijdrij zodat twee scorers niet tegelijk schrijven.
             Game::whereKey($game->id)->lockForUpdate()->first();
+
+            if ($clientId && $existing = $game->events()->where('client_id', $clientId)->first()) {
+                return $existing;
+            }
 
             $engine = $this->engine($game);
             $engine->apply(['type' => $type, 'payload' => $payload]);
@@ -71,6 +95,7 @@ class GameStateService
             $event = $game->events()->create([
                 'type' => $type,
                 'payload' => $payload,
+                'client_id' => $clientId,
                 'user_id' => $userId,
             ]);
 
@@ -80,11 +105,32 @@ class GameStateService
         });
     }
 
-    public function undo(Game $game): bool
+    /**
+     * Maakt het laatste event ongedaan.
+     *
+     * Met $eventId (vanuit de offline-wachtrij) alleen als dat event nog het laatste is:
+     * bestaat het niet meer, dan was het al ongedaan gemaakt (geen fout); staan er inmiddels
+     * nieuwere events achter, dan is dat een conflict.
+     *
+     * @return bool false als er niets ongedaan te maken was
+     *
+     * @throws SyncConflictException
+     */
+    public function undo(Game $game, ?int $eventId = null): bool
     {
-        return DB::transaction(function () use ($game) {
+        return DB::transaction(function () use ($game, $eventId) {
             Game::whereKey($game->id)->lockForUpdate()->first();
             $last = $game->events()->reorder('id', 'desc')->first();
+
+            if ($eventId !== null) {
+                if (! $game->events()->whereKey($eventId)->exists()) {
+                    return true;
+                }
+                if ($last->id !== $eventId) {
+                    throw new SyncConflictException('Er zijn inmiddels nieuwere acties opgeslagen (bijvoorbeeld door een andere scorer). Ongedaan maken is niet doorgevoerd.');
+                }
+            }
+
             if (! $last) {
                 return false;
             }
@@ -95,19 +141,29 @@ class GameStateService
         });
     }
 
-    private function freshEngine(Game $game, bool $public): GameEngine
+    /** @return array{lineups: array{away: list<int>, home: list<int>}, pitchers: array{away: ?int, home: ?int}} */
+    public function setup(Game $game): array
     {
         $game->loadMissing('lineups');
         $lineups = ['away' => [], 'home' => []];
         foreach ($game->lineups as $row) {
-            $lineups[$row->side][] = $row->player_id;
+            $lineups[$row->side][] = (int) $row->player_id;
         }
 
-        return new GameEngine(
-            $lineups,
-            ['away' => $game->away_pitcher_id, 'home' => $game->home_pitcher_id],
-            $this->playerNames($game, $public),
-        );
+        return [
+            'lineups' => $lineups,
+            'pitchers' => [
+                'away' => $game->away_pitcher_id ? (int) $game->away_pitcher_id : null,
+                'home' => $game->home_pitcher_id ? (int) $game->home_pitcher_id : null,
+            ],
+        ];
+    }
+
+    private function freshEngine(Game $game, bool $public): GameEngine
+    {
+        $setup = $this->setup($game);
+
+        return new GameEngine($setup['lineups'], $setup['pitchers'], $this->playerNames($game, $public));
     }
 
     /** @return array<int,string> */
