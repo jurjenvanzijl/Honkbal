@@ -5,12 +5,11 @@
 #
 # Gebruik:  scripts/maak-hostinger-pakket.sh https://jouwdomein.nl [uitvoermap]
 #
-# De zip bevat:
-#   honkbal/       de app (code, vendor, .env, lege database)  -> naast public_html zetten
-#   public_html/   de openbare bestanden                       -> inhoud in public_html zetten
-#   INSTALLATIE.txt
+# Uitvoer (in de uitvoermap):
+#   honkbal-live-hostinger.zip   app (code, vendor, .env ZONDER geheimen, lege database) + public_html
+#   uitpakken.php                pakt de zip op de server uit en maakt daar pas APP_KEY en SETUP_TOKEN aan
 #
-# LET OP: de zip bevat een .env met een geheime APP_KEY en SETUP_TOKEN. Niet delen of in git zetten.
+# De zip bevat bewust geen geheimen: als hij even openbaar in public_html staat, is dat geen lek.
 set -euo pipefail
 
 URL="${1:?Geef de URL op, bijv. https://13base.com}"
@@ -33,9 +32,7 @@ find vendor -type d -name .git -prune -exec rm -rf {} +
 echo "→ Ontwikkelbestanden verwijderen"
 rm -rf tests .github phpunit.xml .editorconfig .styleci.yml scripts CLAUDE.md
 
-echo "→ .env voor productie maken"
-APP_KEY="base64:$(head -c 32 /dev/urandom | base64)"
-SETUP_TOKEN="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
+echo "→ .env voor productie maken (geheimen worden op de server aangemaakt door uitpakken.php)"
 cp .env.example .env
 set_env() { # sleutel waarde
     if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
@@ -43,8 +40,8 @@ set_env() { # sleutel waarde
 set_env APP_ENV production
 set_env APP_DEBUG false
 set_env APP_URL "$URL"
-set_env APP_KEY "$APP_KEY"
-set_env SETUP_TOKEN "$SETUP_TOKEN"
+set_env APP_KEY ""
+set_env SETUP_TOKEN ""
 set_env LOG_LEVEL warning
 set_env SESSION_DRIVER file
 set_env SESSION_LIFETIME 1440
@@ -65,31 +62,21 @@ sed -i "s#^\$app->handleRequest#\$app->usePublicPath(__DIR__);\n\n\$app->handleR
 grep -q "usePublicPath" "$INDEX" || { echo "index.php aanpassen mislukt"; exit 1; }
 
 cat > "$WORK/pakket/INSTALLATIE.txt" <<TXT
-Honkbal Live – installatie op Hostinger (zonder SSH)
-=====================================================
+Honkbal Live – installatie op Hostinger (ook vanaf je telefoon)
+================================================================
 
-1. Maak een backup van de huidige site (hPanel → Bestanden → Backups).
-2. Zet in hPanel de PHP-versie op 8.3 of hoger (Geavanceerd → PHP-configuratie).
-3. Open Bestandsbeheer en ga naar de map van het domein (domains/<domein>/).
-   - Maak een map "oude-site" en verplaats ALLES uit public_html daarheen.
-4. Upload deze zip naar domains/<domein>/ en pak hem daar uit.
-   - De map "honkbal" komt naast public_html te staan.
-   - Verplaats de INHOUD van de uitgepakte map "public_html" naar de bestaande public_html
-     (let op het verborgen bestand .htaccess).
-5. Zet in hPanel "HTTPS forceren" aan (Beveiliging → SSL).
-6. Open deze link en maak je account aan (bewaar hem; ook nodig na updates):
-
-   $URL/installatie?token=$SETUP_TOKEN
-
-7. Klaar. Inloggen kan daarna via $URL/inloggen
-   Op je telefoon: open $URL in Chrome → ⋮ → "Toevoegen aan startscherm".
-
-Geheim: bewaar deze zip en dit bestand veilig; deel ze niet.
+1. Maak een backup van de huidige site (hPanel → Backups).
+2. Zet in hPanel de PHP-versie op 8.3 of hoger.
+3. Upload honkbal-live-hostinger.zip en uitpakken.php naar public_html (NIET zelf uitpakken).
+4. Open $URL/uitpakken.php en volg de stappen.
+5. Zet in hPanel "HTTPS forceren" aan en maak via de getoonde link je account aan.
 TXT
 
 mkdir -p "$OUT_DIR"
 ZIP="$OUT_DIR/honkbal-live-hostinger.zip"
 rm -f "$ZIP"
 (cd "$WORK/pakket" && zip -qr "$ZIP" honkbal public_html INSTALLATIE.txt)
+cp "$ROOT/scripts/hostinger/uitpakken.php" "$OUT_DIR/uitpakken.php"
+cp "$WORK/pakket/INSTALLATIE.txt" "$OUT_DIR/INSTALLATIE.txt"
 echo "✓ Klaar: $ZIP"
-echo "  Installatielink: $URL/installatie?token=$SETUP_TOKEN"
+echo "         $OUT_DIR/uitpakken.php"
