@@ -26,7 +26,9 @@ git -C "$ROOT" archive HEAD | tar -x -C "$WORK/pakket/honkbal"
 cd "$WORK/pakket/honkbal"
 
 echo "→ Composer-pakketten installeren (zonder dev)"
-composer install --no-dev --optimize-autoloader --no-interaction --no-progress --quiet
+composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress --quiet
+# Soms installeert Composer vanuit git; die geschiedenis hoort niet in het pakket.
+find vendor -type d -name .git -prune -exec rm -rf {} +
 
 echo "→ Ontwikkelbestanden verwijderen"
 rm -rf tests .github phpunit.xml .editorconfig .styleci.yml scripts CLAUDE.md
