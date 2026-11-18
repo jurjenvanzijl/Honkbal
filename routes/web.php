@@ -5,6 +5,7 @@ use App\Http\Controllers\Admin\PlayerController;
 use App\Http\Controllers\Admin\ScoreController;
 use App\Http\Controllers\Admin\TeamController;
 use App\Http\Controllers\Auth\LoginController;
+use App\Http\Controllers\InstallController;
 use App\Http\Controllers\PublicGameController;
 use Illuminate\Support\Facades\Route;
 
@@ -18,6 +19,14 @@ Route::get('/wedstrijd/{slug}/stand.json', [PublicGameController::class, 'state'
 Route::get('/wedstrijd/{slug}/overlay', [PublicGameController::class, 'overlay'])->name('games.overlay');
 Route::get('/wedstrijd/{slug}/overlay.json', [PublicGameController::class, 'overlayState'])
     ->middleware('throttle:120,1')->name('games.overlay.state');
+
+// ---------------------------------------------------------------
+// Installatie zonder SSH (alleen met SETUP_TOKEN uit .env)
+// ---------------------------------------------------------------
+Route::middleware('throttle:10,1')->group(function () {
+    Route::get('/installatie', [InstallController::class, 'show'])->name('install');
+    Route::post('/installatie', [InstallController::class, 'store'])->name('install.store');
+});
 
 // ---------------------------------------------------------------
 // Inloggen

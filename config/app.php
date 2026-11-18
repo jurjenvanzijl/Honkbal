@@ -80,6 +80,12 @@ return [
 
     'locale' => env('APP_LOCALE', 'en'),
 
+    /*
+    | Geheime code voor /installatie (eerste account aanmaken, database bijwerken)
+    | op hosting zonder SSH. Leeg = installatiepagina uitgeschakeld.
+    */
+    'setup_token' => env('SETUP_TOKEN'),
+
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),

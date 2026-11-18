@@ -81,12 +81,33 @@ php artisan serve                   # http://localhost:8000
 Demodata (verzonnen namen) laden: `php artisan migrate:fresh --seed`, inloggen met `demo@example.com` / `demo-wachtwoord`.
 **Niet gebruiken op productie.**
 
+## Installeren op Hostinger (of andere hosting zonder SSH)
+
+```bash
+scripts/maak-hostinger-pakket.sh https://jouwdomein.nl
+```
+
+Dit maakt `build/honkbal-live-hostinger.zip` met de app (inclusief `vendor`, productie-`.env` en lege database)
+en een `INSTALLATIE.txt` met de stappen. In het kort:
+
+1. Backup maken, PHP 8.3+ kiezen in hPanel.
+2. Bestaande inhoud van `public_html` naar een map `oude-site` verplaatsen.
+3. Zip uitpakken in `domains/<domein>/`: map `honkbal/` komt **naast** `public_html` (dus niet bereikbaar via het web), de inhoud van `public_html/` uit de zip gaat **in** `public_html`.
+4. HTTPS forceren aan, dan `https://jouwdomein.nl/installatie?token=…` openen en het eerste account aanmaken.
+
+Updates: maak een nieuw pakket, vervang de map `honkbal/` maar **behoud** `honkbal/.env` en `honkbal/database/database.sqlite`,
+vervang de bestanden in `public_html`, en open daarna opnieuw de installatielink (voert databasemigraties uit).
+
+De installatiepagina werkt alleen met de geheime `SETUP_TOKEN` uit `.env` en maakt alleen een account aan zolang er nog geen is.
+Laat `SETUP_TOKEN` leeg om de pagina helemaal uit te zetten.
+
 ## Configuratie (`.env`)
 
 | Variabele | Uitleg |
 |---|---|
 | `APP_NAME` | Naam in de header, standaard "Honkbal Live" |
-| `APP_URL` | Volledige URL van de site (nodig voor juiste links naar live-pagina en overlay) |
+| `APP_URL` | Volledige URL van de site (nodig voor juiste links; bij `https://` wordt https afgedwongen) |
+| `SETUP_TOKEN` | Geheime code voor `/installatie` (leeg = uit) |
 | `APP_LOCALE` / `APP_TIMEZONE` | Standaard `nl` en `Europe/Amsterdam` |
 | `DB_CONNECTION` | `sqlite` (standaard) of `mysql` met `DB_HOST`, `DB_DATABASE`, enz. |
 | `APP_ENV=production`, `APP_DEBUG=false` | Altijd zo op een live server |
