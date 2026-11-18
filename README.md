@@ -81,25 +81,29 @@ php artisan serve                   # http://localhost:8000
 Demodata (verzonnen namen) laden: `php artisan migrate:fresh --seed`, inloggen met `demo@example.com` / `demo-wachtwoord`.
 **Niet gebruiken op productie.**
 
-## Installeren op Hostinger (of andere hosting zonder SSH)
+## Installeren op Hostinger (of andere hosting zonder SSH, ook vanaf de telefoon)
 
 ```bash
 scripts/maak-hostinger-pakket.sh https://jouwdomein.nl
 ```
 
-Dit maakt `build/honkbal-live-hostinger.zip` met de app (inclusief `vendor`, productie-`.env` en lege database)
-en een `INSTALLATIE.txt` met de stappen. In het kort:
+Dit maakt in `build/`:
+- `honkbal-live-hostinger.zip`: de app (inclusief `vendor`, productie-`.env` **zonder geheimen**, lege database);
+- `uitpakken.php`: pakt de zip op de server uit.
 
+Installeren:
 1. Backup maken, PHP 8.3+ kiezen in hPanel.
-2. Bestaande inhoud van `public_html` naar een map `oude-site` verplaatsen.
-3. Zip uitpakken in `domains/<domein>/`: map `honkbal/` komt **naast** `public_html` (dus niet bereikbaar via het web), de inhoud van `public_html/` uit de zip gaat **in** `public_html`.
-4. HTTPS forceren aan, dan `https://jouwdomein.nl/installatie?token=…` openen en het eerste account aanmaken.
+2. Beide bestanden uploaden naar `public_html` (niet zelf uitpakken).
+3. `https://jouwdomein.nl/uitpakken.php` openen en bevestigen. Het script verplaatst de bestaande site naar `oude-site/`,
+   zet de app in `honkbal/` **naast** `public_html` (niet via het web bereikbaar), maakt `APP_KEY` en `SETUP_TOKEN` aan
+   op de server en verwijdert daarna zichzelf en de zip.
+4. HTTPS forceren aan, dan via de getoonde installatielink het eerste account aanmaken.
+   De link staat ook in `INSTALLATIE-LINK.txt` naast `public_html`.
 
-Updates: maak een nieuw pakket, vervang de map `honkbal/` maar **behoud** `honkbal/.env` en `honkbal/database/database.sqlite`,
-vervang de bestanden in `public_html`, en open daarna opnieuw de installatielink (voert databasemigraties uit).
+Updates: nieuw pakket maken, de map `honkbal/` vervangen maar `honkbal/.env` en `honkbal/database/database.sqlite`
+**behouden**, de bestanden in `public_html` vervangen en daarna de installatielink openen (voert databasemigraties uit).
 
 De installatiepagina werkt alleen met de geheime `SETUP_TOKEN` uit `.env` en maakt alleen een account aan zolang er nog geen is.
-Laat `SETUP_TOKEN` leeg om de pagina helemaal uit te zetten.
 
 ## Configuratie (`.env`)
 
